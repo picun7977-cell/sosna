@@ -24,6 +24,8 @@ function notify($: EngineInterface, title: string, body: string, urgency = 'norm
 // Номер этой сессии: Сосна пишет сообщения из острова в ~/.cache/sosna/claude-inbox-<sid>.txt
 const sid = Math.random().toString(36).slice(2, 10)
 let lastTokens = 0
+// Сколько токенов модель написала за текущий ход — как «↓ 3.2k tokens» у спиннера в терминале
+let turnOut = 0
 
 function island($: EngineInterface, ...args: string[]) {
   void $.process.run(['qs', '-c', 'sosna', 'ipc', 'call', 'claude', ...args]).catch(() => {})
@@ -87,12 +89,21 @@ function preview(text: string) {
   return line.length > 140 ? `${line.slice(0, 140)}…` : line || 'Готово'
 }
 
+// Имя сессии для переключателя в острове — папка проекта
+async function sessionName($: EngineInterface) {
+  const root = await $.session.root().catch(() => '')
+  const home = (await $.env.get('HOME').catch(() => '')) ?? ''
+  return root === home ? '~' : fileName(root) || 'Claude'
+}
+
 async function refresh($: EngineInterface) {
   const { context } = await $.session.usage()
   const value = context.percent ?? null
   lastPercent = value
-  lastTokens = context.tokens ?? lastTokens
+  // Те же цифры, что в строке состояния; после /clear токенов ещё нет — это 0, а не старое число
+  lastTokens = context.tokens ?? 0
   await update($, percent, () => value)
+  island($, 'meta', sid, await sessionName($), String(lastTokens), String(value ?? -1))
 
   if (value === null || value < WARN_AT) {
     // После /compact или /clear снова разрешаем предупреждение
@@ -127,7 +138,9 @@ export const register: Register = on => {
   // Начало хода: в острове — запрос и «думает»
   on('turn.start', async ($, e, next) => {
     if ((e as { agentId?: string }).agentId === undefined) {
+      turnOut = 0
       if (e.text.trim()) island($, 'user', clip(e.text, 2000), sid)
+      island($, 'out', sid, '0')
       island($, 'activity', 'Думает…', String(lastTokens), sid)
     }
     return next(e)
@@ -144,6 +157,29 @@ export const register: Register = on => {
     const result = await next(e)
     await refresh($)
     return result
+  })
+
+  // Каждый ответ модели в ходе: прибавляем написанные токены (сабагенты не считаем — как и терминал)
+  on('turn.step', async function* ($, e, next) {
+    const r = yield* next(e)
+    if (e.agentId === undefined && r.usage) {
+      turnOut += r.usage.output_tokens
+      island($, 'out', sid, String(turnOut))
+    }
+    return r
+  })
+
+  // Движок пересчитал контекст (после каждого хода) — свежие цифры в остров
+  on('session.measure', async ($, e, next) => {
+    const result = await next(e)
+    await refresh($)
+    return result
+  })
+
+  // Сессия закрылась (выход, /clear…) — убираем её из переключателя; после /clear она вернётся сама
+  on('session.end', async ($, e, next) => {
+    island($, 'bye', sid)
+    return next(e)
   })
 
   on('turn.complete', async ($, e, next) => {

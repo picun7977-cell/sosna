@@ -181,7 +181,14 @@ PanelWindow {
                         Island.pinnedOpen = !Island.pinnedOpen;
                     }
                 }
-                onWheel: w => Audio.setVolume(Audio.volume + (w.angleDelta.y > 0 ? 0.05 : -0.05))
+                onWheel: w => {
+                    // В развёрнутом чате колесо листает переписку, а не громкость
+                    if (win.chatOpen) {
+                        chatList.scrollBy(w.pixelDelta.y !== 0 ? w.pixelDelta.y : w.angleDelta.y / 2);
+                        return;
+                    }
+                    Audio.setVolume(Audio.volume + (w.angleDelta.y > 0 ? 0.05 : -0.05));
+                }
             }
             // Ушли мышью с быстрых действий — прячем (HoverHandler не теряет наведение над кнопками)
             HoverHandler {
@@ -592,6 +599,11 @@ PanelWindow {
                     size: 18
                     spinning: Claude.working
                 }
+                // Идёт запись экрана — точка в углу звёздочки, как у обложки с музыкой
+                RecDot {
+                    x: workMark.x + workMark.width - 5
+                    y: workMark.y - 3
+                }
                 Lyric {
                     anchors.left: workMark.right
                     anchors.leftMargin: 12
@@ -605,7 +617,8 @@ PanelWindow {
                     anchors.right: parent.right
                     anchors.rightMargin: 16
                     anchors.verticalCenter: parent.verticalCenter
-                    text: Claude.tokens > 0 ? Claude.fmtTokens(Claude.tokens) : ""
+                    // Как у спиннера в терминале: сколько написано за ход; старый мод — размер контекста
+                    text: Claude.out >= 0 ? "↓ " + Claude.fmtTokens(Claude.out) : Claude.tokens > 0 ? Claude.fmtTokens(Claude.tokens) : ""
                     mono: true
                     size: 11
                     dim: true
@@ -643,9 +656,37 @@ PanelWindow {
                         size: 12
                         elide: Text.ElideRight
                     }
+                    // Идёт запись экрана: ● 01:23, клик — стоп
+                    Row {
+                        visible: Recorder.active
+                        spacing: 6
+                        RecDot {
+                            anchors.verticalCenter: parent.verticalCenter
+                            border.width: 0
+                        }
+                        Label {
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: Media.fmt(Recorder.elapsed)
+                            mono: true
+                            size: 11
+                        }
+                        TapHandler {
+                            cursorShape: Qt.PointingHandCursor
+                            onTapped: Recorder.toggle()
+                        }
+                    }
                     Label {
-                        visible: Claude.tokens > 0
-                        text: Claude.fmtTokens(Claude.tokens) + " токенов"
+                        visible: text !== ""
+                        text: {
+                            const p = [];
+                            if (Claude.out >= 0)
+                                p.push("↓ " + Claude.fmtTokens(Claude.out));
+                            if (Claude.percent >= 0)
+                                p.push("контекст " + Claude.percent + "%");
+                            else if (Claude.tokens > 0)
+                                p.push("контекст " + Claude.fmtTokens(Claude.tokens));
+                            return p.join(" · ");
+                        }
                         mono: true
                         size: 11
                         dim: true
@@ -664,10 +705,67 @@ PanelWindow {
                     }
                 }
 
+                // Несколько Claude — переключатель: папка и начало последнего запроса
+                ListView {
+                    id: sessionBar
+                    visible: Claude.sessions.length > 1
+                    anchors.top: chatHead.bottom
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.topMargin: 8
+                    anchors.leftMargin: 16
+                    anchors.rightMargin: 16
+                    height: visible ? 28 : 0
+                    orientation: ListView.Horizontal
+                    spacing: 6
+                    clip: true
+                    boundsBehavior: Flickable.StopAtBounds
+                    model: Claude.sessions
+
+                    delegate: HoverButton {
+                        id: tab
+                        required property var modelData
+                        readonly property bool current: modelData.sid === Claude.sid
+                        width: tabRow.implicitWidth + 20
+                        height: 28
+                        radius: 14
+                        hoverScale: 1.04
+                        active: current
+                        color: current ? Theme.alpha(Theme.accent, 0.32) : hovered ? Theme.tileHover : Theme.tile
+                        onClicked: Claude.select(modelData.sid)
+                        Row {
+                            id: tabRow
+                            anchors.centerIn: parent
+                            spacing: 6
+                            ClaudeMark {
+                                anchors.verticalCenter: parent.verticalCenter
+                                size: 13
+                                spinning: tab.modelData.working
+                                opacity: tab.modelData.working ? 1 : 0.55
+                            }
+                            Label {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: tab.modelData.name
+                                size: 12
+                                weight: tab.current ? Font.DemiBold : Font.Normal
+                            }
+                            Label {
+                                visible: text !== ""
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: Math.min(implicitWidth, 120)
+                                text: tab.modelData.hint.replace(/\s+/g, " ")
+                                elide: Text.ElideRight
+                                size: 11.5
+                                dim: true
+                            }
+                        }
+                    }
+                }
+
                 // Переписка
                 ListView {
                     id: chatList
-                    anchors.top: chatHead.bottom
+                    anchors.top: sessionBar.visible ? sessionBar.bottom : chatHead.bottom
                     anchors.bottom: chatBox.top
                     anchors.left: parent.left
                     anchors.right: parent.right
@@ -679,13 +777,40 @@ PanelWindow {
                     spacing: 8
                     model: Claude.messages
                     boundsBehavior: Flickable.StopAtBounds
-                    onCountChanged: Qt.callLater(positionViewAtEnd)
-                    onVisibleChanged: if (visible) Qt.callLater(positionViewAtEnd)
+                    // Держимся у последнего сообщения, пока сам не отлистал вверх
+                    property bool stick: true
+                    property bool jumping: false
+                    function toEnd(): void {
+                        jumping = true;
+                        positionViewAtEnd();
+                        jumping = false;
+                        stick = true;
+                    }
+                    // Колесо ловит общий MouseArea острова и передаёт сюда: dy > 0 — вверх
+                    function scrollBy(dy: real): void {
+                        if (contentHeight <= height)
+                            return;
+                        const top = originY;
+                        const bottom = originY + contentHeight - height;
+                        contentY = Math.max(top, Math.min(bottom, contentY - dy));
+                    }
+                    onContentYChanged: if (!jumping) stick = atYEnd
+                    // Высота ответов с markdown известна не сразу — догоняем низ
+                    onContentHeightChanged: if (stick) Qt.callLater(toEnd)
+                    onCountChanged: if (stick) Qt.callLater(toEnd)
+                    onVisibleChanged: if (visible) Qt.callLater(toEnd)
+                    Connections {
+                        target: Claude
+                        function onSidChanged(): void {
+                            Qt.callLater(chatList.toEnd);
+                        }
+                    }
 
                     delegate: Item {
                         id: msg
-                        required property var modelData
-                        readonly property bool mine: modelData.role === "user"
+                        required property string role
+                        required property string text
+                        readonly property bool mine: role === "user"
                         width: chatList.width
                         height: bubble.height
 
@@ -702,7 +827,7 @@ PanelWindow {
                                 x: 11
                                 y: 7
                                 width: Math.min(implicitWidth, chatList.width * 0.84)
-                                text: msg.modelData.text
+                                text: msg.text
                                 textFormat: msg.mine ? Text.PlainText : Text.MarkdownText
                                 wrapMode: Text.Wrap
                                 color: Theme.text
@@ -723,6 +848,36 @@ PanelWindow {
                         text: Claude.sid ? "Напиши Claude — сообщение уйдёт в открытую сессию Claude Code" : "Claude Code не запущен"
                         dim: true
                         size: 12.5
+                    }
+                }
+
+                // Полоска прокрутки — видно, сколько ещё листать
+                Rectangle {
+                    visible: chatList.contentHeight > chatList.height
+                    anchors.right: parent.right
+                    anchors.rightMargin: 6
+                    y: chatList.y + chatList.visibleArea.yPosition * chatList.height
+                    width: 3
+                    height: Math.max(20, chatList.visibleArea.heightRatio * chatList.height)
+                    radius: 1.5
+                    color: Theme.alpha(Theme.text, chatList.moving ? 0.4 : 0.18)
+                }
+
+                // Отлистал вверх — кнопка «вниз, к последнему»
+                HoverButton {
+                    visible: !chatList.atYEnd && chatList.count > 0
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    anchors.bottom: chatBox.top
+                    anchors.bottomMargin: 8
+                    width: 30
+                    height: 30
+                    radius: 15
+                    color: hovered ? Theme.tileHover : Theme.tile
+                    onClicked: chatList.toEnd()
+                    Icon {
+                        anchors.centerIn: parent
+                        text: "arrow_downward"
+                        size: 17
                     }
                 }
 
@@ -761,6 +916,18 @@ PanelWindow {
                             text = "";
                         }
                         Keys.onEscapePressed: Island.pinnedOpen = false
+                        Keys.onPressed: e => {
+                            if (e.key === Qt.Key_PageDown || e.key === Qt.Key_Down) {
+                                chatList.flick(0, -1600);
+                                e.accepted = true;
+                            } else if (e.key === Qt.Key_PageUp || e.key === Qt.Key_Up) {
+                                chatList.flick(0, 1600);
+                                e.accepted = true;
+                            } else if (e.key === Qt.Key_End && (e.modifiers & Qt.ControlModifier)) {
+                                chatList.toEnd();
+                                e.accepted = true;
+                            }
+                        }
 
                         Label {
                             visible: !chatInput.text
@@ -1252,6 +1419,23 @@ PanelWindow {
         scale: on ? 1 : 0.94
         Behavior on opacity { NumberAnimation { duration: on ? 260 : 120 } }
         Behavior on scale { NumberAnimation { duration: 300; easing.type: Easing.OutCubic } }
+    }
+
+    // Мигающая красная точка «идёт запись»
+    component RecDot: Rectangle {
+        visible: Recorder.active
+        width: 8
+        height: 8
+        radius: 4
+        color: Theme.red
+        border.width: 1.5
+        border.color: Theme.island
+        SequentialAnimation on opacity {
+            running: Recorder.active
+            loops: Animation.Infinite
+            NumberAnimation { to: 0.35; duration: 800; easing.type: Easing.InOutSine }
+            NumberAnimation { to: 1; duration: 800; easing.type: Easing.InOutSine }
+        }
     }
 
     component Art: ClippingRectangle {

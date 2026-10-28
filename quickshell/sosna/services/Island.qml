@@ -18,8 +18,8 @@ Singleton {
     readonly property string mode: {
         if (forceIdle)
             return "idle";
-        // Пока играет музыка, остров показывает её; запись — красной точкой у обложки
-        if (Recorder.active && !Media.playing)
+        // Пока играет музыка или работает Claude, остров показывает их; запись — красной точкой
+        if (Recorder.active && !Media.playing && !Claude.present)
             return "rec";
         if (Abi.state !== "idle")
             return "abi";

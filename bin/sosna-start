@@ -1,0 +1,15 @@
+#!/bin/sh
+# Запуск оболочки «Сосна» (qs -c sosna). Если работает caelestia — гасим её.
+qs -c caelestia kill >/dev/null 2>&1
+mkdir -p "$HOME/.cache/sosna"
+
+# История буфера обмена для Spotlight (Super+V)
+if command -v cliphist >/dev/null 2>&1 && ! pgrep -f "wl-paste --type text --watch cliphist" >/dev/null; then
+    setsid wl-paste --type text --watch cliphist store >/dev/null 2>&1 &
+    setsid wl-paste --type image --watch cliphist store >/dev/null 2>&1 &
+fi
+
+if ! qs -c sosna ipc show >/dev/null 2>&1; then
+    setsid qs -c sosna >"$HOME/.cache/sosna/qs.log" 2>&1 &
+fi
+# Курсор и «встряхни мышь» Сосна запускает сама (scripts/cursor.py)

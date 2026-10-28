@@ -2,9 +2,10 @@ pragma Singleton
 
 import QtQuick
 import Quickshell
+import Quickshell.Io
 import Quickshell.Services.Mpris
 
-// Что играет + синхронный текст песни с lrclib.net
+// Что играет + синхронный текст песни с lrclib.net (scripts/lyrics.py)
 Singleton {
     id: root
 
@@ -145,14 +146,14 @@ Singleton {
     Timer {
         id: lookupTimer
         interval: 600
-        onTriggered: root.request(0, "")
+        onTriggered: root.request()
     }
 
-    // LRCLIB бывает перегружен (503) — это не «текста нет», пробуем ещё раз позже
+    // lrclib недоступен (нет сети, блокировка, перегрузка) — это не «текста нет», пробуем позже
     Timer {
         id: retryTimer
-        interval: 15000
-        onTriggered: root.request(0, "")
+        interval: 20000
+        onTriggered: root.request()
     }
 
     function setLyrics(lines: var, plain: string): void {
@@ -162,56 +163,49 @@ Singleton {
         updateLine();
     }
 
-    // Попытки: 0 — точное совпадение, 1 — поиск «исполнитель название»,
-    // 2 — только по названию (на YouTube/SoundCloud «исполнитель» часто — канал залившего)
-    // plain — обычный текст, найденный на прошлых попытках (запасной вариант)
-    function request(stage: int, plain: string): void {
-        const key = trackKey;
-        const q = splitTitle();
-        let url;
-        if (stage === 0) {
-            url = "https://lrclib.net/api/get?artist_name=" + encodeURIComponent(q.artist) + "&track_name=" + encodeURIComponent(q.title);
-            if (length > 0)
-                url += "&duration=" + Math.round(length);
-        } else if (stage === 1) {
-            url = "https://lrclib.net/api/search?q=" + encodeURIComponent((q.artist + " " + q.title).trim());
-        } else {
-            url = "https://lrclib.net/api/search?track_name=" + encodeURIComponent(q.title);
+    // Поиск — в scripts/lyrics.py: lrclib напрямую, иначе через локальный прокси (Throne, Happ…),
+    // найденное кэшируется на диске и потом работает без сети
+    function request(): void {
+        // Ещё ищем текст прошлого трека — запросим этот сразу после
+        if (lyricsProc.running) {
+            lyricsProc.pending = true;
+            return;
         }
-        const xhr = new XMLHttpRequest();
-        xhr.onreadystatechange = () => {
-            if (xhr.readyState !== XMLHttpRequest.DONE || key !== root.trackKey)
-                return;
-            // Сервер перегружен или нет сети — повторим позже и в кэш «нет текста» не пишем
-            if (xhr.status === 0 || xhr.status === 429 || xhr.status >= 500) {
-                if (root.retries++ < 6)
-                    retryTimer.restart();
-                else
-                    root.setLyrics([], plain);
-                return;
+        const q = splitTitle();
+        lyricsProc.key = trackKey;
+        lyricsProc.command = ["python3", Quickshell.shellDir + "/scripts/lyrics.py", q.artist, q.title, String(Math.round(length)), Config.o.lyricsProxy];
+        lyricsProc.running = true;
+    }
+
+    Process {
+        id: lyricsProc
+        property string key
+        property bool pending: false
+        onRunningChanged: if (!running && pending) {
+            pending = false;
+            root.request();
+        }
+        stdout: StdioCollector {
+            onStreamFinished: {
+                if (lyricsProc.key !== root.trackKey)
+                    return;
+                let res;
+                try {
+                    res = JSON.parse(text);
+                } catch (e) {
+                    res = { status: "error" };
+                }
+                if (res.status === "error") {
+                    if (root.retries++ < 6)
+                        retryTimer.restart();
+                    else
+                        root.setLyrics([], "");
+                    return;
+                }
+                const parsed = res.synced ? root.parseLrc(res.synced) : [];
+                root.cache[lyricsProc.key] = { lines: parsed, plain: res.plain ?? "" };
+                root.setLyrics(parsed, res.plain ?? "");
             }
-            let synced = "";
-            try {
-                const data = JSON.parse(xhr.responseText);
-                let list = Array.isArray(data) ? data : [data];
-                // По одному названию — только если длительность почти та же
-                if (stage === 2)
-                    list = root.length > 0 ? list.filter(d => Math.abs(d.duration - root.length) < 4).sort((x, y) => Math.abs(x.duration - root.length) - Math.abs(y.duration - root.length)) : [];
-                synced = (list.find(d => d.syncedLyrics) ?? {}).syncedLyrics ?? "";
-                // Обычный текст — только если длительность совпадает, чтобы не показать чужую песню
-                if (!plain)
-                    plain = (list.find(d => d.plainLyrics && (root.length <= 0 || Math.abs(d.duration - root.length) < 6)) ?? {}).plainLyrics ?? "";
-            } catch (e) {}
-            if (!synced && stage < 2) {
-                root.request(stage + 1, plain);
-                return;
-            }
-            const parsed = synced ? root.parseLrc(synced) : [];
-            root.cache[key] = { lines: parsed, plain: plain };
-            root.setLyrics(parsed, plain);
-        };
-        xhr.open("GET", url);
-        xhr.setRequestHeader("User-Agent", "sosna-shell/1.0 (local desktop)");
-        xhr.send();
+        }
     }
 }

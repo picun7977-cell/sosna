@@ -58,6 +58,7 @@ Singleton {
             property bool islandHideFullscreen: true
             property bool islandIdle: true        // погода и сосенка в покое
             property bool islandLyrics: true
+            property string lyricsProxy: ""      // прокси для lrclib, пусто — найти самому (Throne, Happ, Clash)
             property bool islandPet: true
             property string countdownTitle: "Новый год"
             property string countdownDate: "2027-01-01"

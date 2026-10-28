@@ -214,6 +214,24 @@ PanelWindow {
                     size: 22
                     radius: 6
                 }
+                // Идёт запись экрана — точка в углу обложки
+                Rectangle {
+                    visible: Recorder.active
+                    x: artSmall.x + artSmall.width - 6
+                    y: artSmall.y - 2
+                    width: 8
+                    height: 8
+                    radius: 4
+                    color: Theme.red
+                    border.width: 1.5
+                    border.color: Theme.island
+                    SequentialAnimation on opacity {
+                        running: Recorder.active
+                        loops: Animation.Infinite
+                        NumberAnimation { to: 0.35; duration: 800; easing.type: Easing.InOutSine }
+                        NumberAnimation { to: 1; duration: 800; easing.type: Easing.InOutSine }
+                    }
+                }
                 Lyric {
                     id: compactText
                     anchors.left: artSmall.right

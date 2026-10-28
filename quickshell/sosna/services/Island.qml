@@ -5,7 +5,7 @@ import Quickshell
 import Quickshell.Io
 
 // Состояние «острова». Есть короткие события (громкость, раскладка, уведомление…)
-// и постоянные режимы (запись, фокус, Эби, музыка). Событие на время перекрывает режим.
+// и постоянные режимы (запись, фокус, Эби, Claude, музыка). Событие на время перекрывает режим.
 Singleton {
     id: root
 
@@ -24,6 +24,9 @@ Singleton {
             return "abi";
         if (Focus.running)
             return "focus";
+        // Claude Code работает (или только что ответил), а музыка не играет
+        if (Claude.present && !Media.playing)
+            return "work";
         if (Media.hasTrack)
             return "music";
         return "idle";
@@ -31,7 +34,8 @@ Singleton {
 
     // Что показывать сейчас
     readonly property string view: event !== "" ? event : mode
-    readonly property bool expanded: event === "" && ((hovered || pinnedOpen) && (mode === "music" || mode === "focus" || mode === "rec") || pinnedOpen && mode === "idle")
+    // Чат с Claude разворачивается кликом (наведения мало — иначе он прыгал бы под мышью)
+    readonly property bool expanded: event === "" && ((hovered || pinnedOpen) && (mode === "music" || mode === "focus" || mode === "rec") || pinnedOpen && (mode === "idle" || mode === "work"))
 
     // Сцены острова в покое — сменяют друг друга
     readonly property var scenes: {

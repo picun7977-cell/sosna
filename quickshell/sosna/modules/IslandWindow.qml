@@ -14,12 +14,21 @@ PanelWindow {
     color: "transparent"
     anchors.top: true
     implicitWidth: 760
-    implicitHeight: 300
+    implicitHeight: 420
     exclusionMode: ExclusionMode.Ignore
     WlrLayershell.layer: WlrLayer.Overlay
     WlrLayershell.namespace: "sosna-island"
     mask: Region {
         item: shape
+    }
+    // Клавиатура нужна только развёрнутому чату с Claude (фокус — по клику)
+    WlrLayershell.keyboardFocus: win.chatOpen ? WlrKeyboardFocus.OnDemand : WlrKeyboardFocus.None
+
+    readonly property bool chatOpen: view === "work" && Island.expanded
+    onChatOpenChanged: {
+        Claude.hold = chatOpen;
+        if (chatOpen)
+            chatInput.forceActiveFocus();
     }
 
     readonly property string view: Island.view
@@ -64,6 +73,8 @@ PanelWindow {
             if (win.lyr)
                 return Qt.size(460, 34);
             return Qt.size(Math.max(220, Math.min(460, titleMeasure.implicitWidth + 104)), 34);
+        case "work":
+            return Island.expanded ? Qt.size(540, 380) : Qt.size(420, 36);
         case "actions":
             return Qt.size(440, 98);
         default:
@@ -159,6 +170,9 @@ PanelWindow {
                         Island.dismiss();
                     } else if (win.view === "claude" || win.view === "text" || win.view === "color" || win.view === "layout" || win.view === "caps") {
                         Island.dismiss();
+                    } else if (win.chatOpen) {
+                        // Клик по развёрнутому чату не сворачивает его — только кнопка или Esc
+                        chatInput.forceActiveFocus();
                     } else if (win.view === "music" && m.button === Qt.MiddleButton) {
                         Media.toggle();
                     } else {
@@ -515,6 +529,220 @@ PanelWindow {
                             dim: true
                             size: 12.5
                             weight: Font.Normal
+                        }
+                    }
+                }
+            }
+
+            // ── Claude работает: звёздочка | что делает | токены ──
+            View {
+                on: win.view === "work" && !Island.expanded
+                ClaudeMark {
+                    id: workMark
+                    x: 14
+                    anchors.verticalCenter: parent.verticalCenter
+                    size: 18
+                    spinning: Claude.working
+                }
+                Lyric {
+                    anchors.left: workMark.right
+                    anchors.leftMargin: 12
+                    anchors.right: workTokens.left
+                    anchors.rightMargin: 12
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: Claude.activity
+                }
+                Label {
+                    id: workTokens
+                    anchors.right: parent.right
+                    anchors.rightMargin: 16
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: Claude.tokens > 0 ? Claude.fmtTokens(Claude.tokens) : ""
+                    mono: true
+                    size: 11
+                    dim: true
+                }
+            }
+
+            // ── Чат с Claude (развёрнутый остров) ──
+            View {
+                on: win.chatOpen
+
+                // Шапка
+                RowLayout {
+                    id: chatHead
+                    anchors.top: parent.top
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.topMargin: 12
+                    anchors.leftMargin: 18
+                    anchors.rightMargin: 12
+                    height: 28
+                    spacing: 10
+                    ClaudeMark {
+                        size: 20
+                        spinning: Claude.working
+                    }
+                    Label {
+                        text: "Claude"
+                        weight: Font.DemiBold
+                        size: 14
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: Claude.activity
+                        dim: true
+                        size: 12
+                        elide: Text.ElideRight
+                    }
+                    Label {
+                        visible: Claude.tokens > 0
+                        text: Claude.fmtTokens(Claude.tokens) + " токенов"
+                        mono: true
+                        size: 11
+                        dim: true
+                    }
+                    HoverButton {
+                        width: 26
+                        height: 26
+                        radius: 13
+                        color: hovered ? Theme.tileHover : "transparent"
+                        onClicked: Island.pinnedOpen = false
+                        Icon {
+                            anchors.centerIn: parent
+                            text: "expand_less"
+                            size: 18
+                        }
+                    }
+                }
+
+                // Переписка
+                ListView {
+                    id: chatList
+                    anchors.top: chatHead.bottom
+                    anchors.bottom: chatBox.top
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.topMargin: 10
+                    anchors.bottomMargin: 10
+                    anchors.leftMargin: 16
+                    anchors.rightMargin: 16
+                    clip: true
+                    spacing: 8
+                    model: Claude.messages
+                    boundsBehavior: Flickable.StopAtBounds
+                    onCountChanged: Qt.callLater(positionViewAtEnd)
+                    onVisibleChanged: if (visible) Qt.callLater(positionViewAtEnd)
+
+                    delegate: Item {
+                        id: msg
+                        required property var modelData
+                        readonly property bool mine: modelData.role === "user"
+                        width: chatList.width
+                        height: bubble.height
+
+                        Rectangle {
+                            id: bubble
+                            anchors.right: msg.mine ? parent.right : undefined
+                            anchors.left: msg.mine ? undefined : parent.left
+                            width: msgText.width + 22
+                            height: msgText.height + 14
+                            radius: 14
+                            color: msg.mine ? Theme.alpha(Theme.accent, 0.32) : Theme.tile
+                            Text {
+                                id: msgText
+                                x: 11
+                                y: 7
+                                width: Math.min(implicitWidth, chatList.width * 0.84)
+                                text: msg.modelData.text
+                                textFormat: msg.mine ? Text.PlainText : Text.MarkdownText
+                                wrapMode: Text.Wrap
+                                color: Theme.text
+                                linkColor: Theme.accent
+                                font.family: Theme.font
+                                font.pixelSize: 13
+                                onLinkActivated: l => Qt.openUrlExternally(l)
+                            }
+                        }
+                    }
+
+                    Label {
+                        anchors.centerIn: parent
+                        visible: chatList.count === 0
+                        width: parent.width - 40
+                        horizontalAlignment: Text.AlignHCenter
+                        wrapMode: Text.WordWrap
+                        text: Claude.sid ? "Напиши Claude — сообщение уйдёт в открытую сессию Claude Code" : "Claude Code не запущен"
+                        dim: true
+                        size: 12.5
+                    }
+                }
+
+                // Поле ввода
+                Rectangle {
+                    id: chatBox
+                    anchors.bottom: parent.bottom
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.margins: 14
+                    height: 38
+                    radius: 19
+                    color: Theme.tile
+                    border.width: chatInput.activeFocus ? 1 : 0
+                    border.color: Theme.alpha(Theme.accent, 0.6)
+
+                    TextInput {
+                        id: chatInput
+                        anchors.left: parent.left
+                        anchors.right: sendBtn.left
+                        anchors.leftMargin: 16
+                        anchors.rightMargin: 8
+                        anchors.verticalCenter: parent.verticalCenter
+                        enabled: Claude.sid !== ""
+                        color: Theme.text
+                        selectionColor: Theme.alpha(Theme.accent, 0.5)
+                        font.family: Theme.font
+                        font.pixelSize: 13
+                        clip: true
+                        Keys.onReturnPressed: {
+                            Claude.send(text);
+                            text = "";
+                        }
+                        Keys.onEnterPressed: {
+                            Claude.send(text);
+                            text = "";
+                        }
+                        Keys.onEscapePressed: Island.pinnedOpen = false
+
+                        Label {
+                            visible: !chatInput.text
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: "Сообщение для Claude…"
+                            dim: true
+                            size: 13
+                        }
+                    }
+
+                    HoverButton {
+                        id: sendBtn
+                        anchors.right: parent.right
+                        anchors.rightMargin: 5
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 28
+                        height: 28
+                        radius: 14
+                        enabled: chatInput.text.trim() !== ""
+                        opacity: enabled ? 1 : 0.4
+                        color: Theme.accent
+                        onClicked: {
+                            Claude.send(chatInput.text);
+                            chatInput.text = "";
+                        }
+                        Icon {
+                            anchors.centerIn: parent
+                            text: "arrow_upward"
+                            size: 17
+                            color: Theme.inkOnAccent
                         }
                     }
                 }

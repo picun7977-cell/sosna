@@ -1,0 +1,1 @@
+{ "name": "task-notify", "author": { "name": "picun7977-cell" }, "version": "0.2.0", "description": "Claude Code в острове Сосны: что он делает, токены, чат; уведомление и звук по окончании хода, полоска контекста", "types": "./types/index.d.ts" }

@@ -34,7 +34,9 @@ Singleton {
             // Claude Code (мод task-notify) — свой вид в острове, в историю не кладём
             if (n.appName === "Claude Code") {
                 const ctx = parseInt(n.hints["x-sosna-ctx"] ?? "-1");
-                Island.show("claude", { title: n.summary, body: n.body, ctx: ctx, error: n.urgency === NotificationUrgency.Critical }, 5000);
+                // Открыт чат с Claude — ответ и так виден в нём, остров не сворачиваем
+                if (!Claude.hold)
+                    Island.show("claude", { title: n.summary, body: n.body, ctx: ctx, error: n.urgency === NotificationUrgency.Critical }, 5000);
                 n.dismiss();
                 return;
             }

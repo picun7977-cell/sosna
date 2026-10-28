@@ -34,6 +34,8 @@ PanelWindow {
     readonly property string view: Island.view
     readonly property bool hidden: (Hypr.fullscreen && Config.o.islandHideFullscreen) || !Ui.entered || Session.locked
     readonly property bool lyr: Media.hasLyrics && Config.o.islandLyrics
+    // Текст без таймингов — только в развёрнутом острове
+    readonly property bool plain: Media.lyricsState === "plain" && Config.o.islandLyrics
 
     SystemClock {
         id: islandClock
@@ -68,7 +70,7 @@ PanelWindow {
             return Abi.state === "speaking" ? Qt.size(460, Math.min(130, abiText.implicitHeight + 40)) : Qt.size(340, 46);
         case "music":
             if (Island.expanded)
-                return Qt.size(480, win.lyr ? 236 : 150);
+                return Qt.size(480, win.lyr || win.plain ? 236 : 150);
             // С текстом песни ширина постоянная — иначе остров «дышит» на каждой строке
             if (win.lyr)
                 return Qt.size(460, 34);
@@ -322,6 +324,34 @@ PanelWindow {
                                 cursorShape: Qt.PointingHandCursor
                                 onClicked: m => Media.seek(Media.length * Math.max(0, Math.min(1, (m.x - 6) / track.width)))
                             }
+                        }
+                    }
+
+                    // Текст без таймингов: прокручивается примерно по ходу песни
+                    Flickable {
+                        id: plainView
+                        visible: win.plain && !win.lyr
+                        anchors.top: progress.bottom
+                        anchors.topMargin: 10
+                        anchors.bottom: parent.bottom
+                        width: parent.width
+                        clip: true
+                        interactive: false
+                        contentHeight: plainText.height
+                        // Вступление и концовку пропускаем: текст идёт примерно с 8% до 92% песни
+                        readonly property real k: Media.length > 0 ? Math.max(0, Math.min(1, (Media.position - Media.length * 0.08) / (Media.length * 0.84))) : 0
+                        contentY: Math.max(0, contentHeight - height) * k
+                        Behavior on contentY { NumberAnimation { duration: 400 } }
+                        Text {
+                            id: plainText
+                            width: plainView.width
+                            text: Media.plainLyrics
+                            horizontalAlignment: Text.AlignHCenter
+                            wrapMode: Text.WordWrap
+                            lineHeight: 1.25
+                            font.family: Theme.font
+                            font.pixelSize: 13
+                            color: Theme.alpha(Theme.text, 0.62)
                         }
                     }
 

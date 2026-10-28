@@ -28,11 +28,9 @@ Scope {
             WlrLayershell.namespace: "sosna-shot"
             WlrLayershell.keyboardFocus: WlrKeyboardFocus.Exclusive
 
-            // Окна текущего рабочего стола: [{ x, y, w, h }] — для подсветки и выбора кликом
-            readonly property var windows: Hypr.wsWindows.map(t => {
-                const o = t.lastIpcObject ?? {};
-                return o.at && o.size ? { x: o.at[0], y: o.at[1], w: o.size[0], h: o.size[1] } : null;
-            }).filter(r => !!r).reverse()
+            // Окна текущего рабочего стола: [{ x, y, w, h }] — для подсветки и выбора кликом.
+            // Порядок — как на экране сверху вниз: закреплённые, плавающие, потом по последнему фокусу
+            readonly property var windows: Hypr.wsWindows.map(t => t.lastIpcObject ?? {}).filter(o => o.at && o.size).sort((a, b) => (b.pinned - a.pinned) || (b.floating - a.floating) || ((a.focusHistoryID ?? 99) - (b.focusHistoryID ?? 99))).map(o => ({ x: o.at[0], y: o.at[1], w: o.size[0], h: o.size[1] }))
 
             property real sx: 0
             property real sy: 0
@@ -70,6 +68,26 @@ Scope {
                 function onCaptureRect(r: rect): void {
                     picker.capture(r);
                 }
+            }
+
+            // Пока кнопка зажата, Hyprland может не присылать движения мыши слою —
+            // тогда рамку тянем по позиции курсора из сокета Hyprland (сервис Cursor)
+            Connections {
+                target: Cursor
+                enabled: picker.dragging
+                function onXChanged(): void {
+                    picker.dragTo(Cursor.x - picker.screen.x, Cursor.y - picker.screen.y);
+                }
+                function onYChanged(): void {
+                    picker.dragTo(Cursor.x - picker.screen.x, Cursor.y - picker.screen.y);
+                }
+            }
+
+            function dragTo(x: real, y: real): void {
+                ex = x;
+                ey = y;
+                if (Math.abs(x - sx) > 4 || Math.abs(y - sy) > 4)
+                    moved = true;
             }
 
             ScreencopyView {
@@ -174,19 +192,20 @@ Scope {
                     picker.moved = false;
                 }
                 onPositionChanged: m => {
-                    if (picker.dragging) {
-                        picker.ex = m.x;
-                        picker.ey = m.y;
-                        if (Math.abs(m.x - picker.sx) > 4 || Math.abs(m.y - picker.sy) > 4)
-                            picker.moved = true;
-                    } else {
+                    if (picker.dragging)
+                        picker.dragTo(m.x, m.y);
+                    else
                         picker.hoverWin = picker.winAt(m.x, m.y);
-                    }
                 }
                 onReleased: m => {
                     if (!picker.dragging)
                         return;
-                    const r = picker.sel;
+                    // Конец выделения — точка отпускания (даже если движений по дороге не пришло)
+                    picker.dragTo(m.x, m.y);
+                    // Копия, а не ссылка: в Qt 6 picker.sel — «живая» ссылка, и после dragging = false
+                    // она превратилась бы в окно под курсором
+                    const s = picker.sel;
+                    const r = Qt.rect(s.x, s.y, s.width, s.height);
                     picker.dragging = false;
                     if (picker.moved)
                         picker.capture(r);

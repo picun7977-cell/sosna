@@ -23,7 +23,9 @@ Singleton {
     // Текст песни
     property var lyrics: []          // [{ t: секунды, text: строка }]
     property int line: -1
-    property string lyricsState: "none" // none | loading | ok | missing
+    property string lyricsState: "none" // none | loading | ok | plain | missing
+    property string plainLyrics: ""     // текст без таймингов (если синхронного нет)
+    property int retries: 0
     readonly property bool hasLyrics: lyricsState === "ok" && lyrics.length > 0
     readonly property string currentLine: hasLyrics && line >= 0 ? lyrics[line].text : ""
     // Сколько строки уже спето (0…1). LRCLIB даёт время только начала строк, поэтому
@@ -123,14 +125,16 @@ Singleton {
             return;
         trackKey = key;
         line = -1;
+        retries = 0;
+        retryTimer.stop();
+        plainLyrics = "";
         if (!title) {
             lyrics = [];
             lyricsState = "none";
             return;
         }
         if (cache[key]) {
-            lyrics = cache[key];
-            lyricsState = lyrics.length ? "ok" : "missing";
+            setLyrics(cache[key].lines, cache[key].plain);
             return;
         }
         lyrics = [];
@@ -141,12 +145,27 @@ Singleton {
     Timer {
         id: lookupTimer
         interval: 600
-        onTriggered: root.request(0)
+        onTriggered: root.request(0, "")
+    }
+
+    // LRCLIB бывает перегружен (503) — это не «текста нет», пробуем ещё раз позже
+    Timer {
+        id: retryTimer
+        interval: 15000
+        onTriggered: root.request(0, "")
+    }
+
+    function setLyrics(lines: var, plain: string): void {
+        lyrics = lines;
+        plainLyrics = lines.length ? "" : plain;
+        lyricsState = lines.length ? "ok" : plain ? "plain" : "missing";
+        updateLine();
     }
 
     // Попытки: 0 — точное совпадение, 1 — поиск «исполнитель название»,
     // 2 — только по названию (на YouTube/SoundCloud «исполнитель» часто — канал залившего)
-    function request(stage: int): void {
+    // plain — обычный текст, найденный на прошлых попытках (запасной вариант)
+    function request(stage: int, plain: string): void {
         const key = trackKey;
         const q = splitTitle();
         let url;
@@ -163,28 +182,33 @@ Singleton {
         xhr.onreadystatechange = () => {
             if (xhr.readyState !== XMLHttpRequest.DONE || key !== root.trackKey)
                 return;
+            // Сервер перегружен или нет сети — повторим позже и в кэш «нет текста» не пишем
+            if (xhr.status === 0 || xhr.status === 429 || xhr.status >= 500) {
+                if (root.retries++ < 6)
+                    retryTimer.restart();
+                else
+                    root.setLyrics([], plain);
+                return;
+            }
             let synced = "";
             try {
                 const data = JSON.parse(xhr.responseText);
-                if (Array.isArray(data)) {
-                    let found = data.filter(d => d.syncedLyrics);
-                    // По одному названию — только если длительность почти та же
-                    if (stage === 2)
-                        found = root.length > 0 ? found.filter(d => Math.abs(d.duration - root.length) < 4).sort((x, y) => Math.abs(x.duration - root.length) - Math.abs(y.duration - root.length)) : [];
-                    synced = found.length ? found[0].syncedLyrics : "";
-                } else {
-                    synced = data.syncedLyrics ?? "";
-                }
+                let list = Array.isArray(data) ? data : [data];
+                // По одному названию — только если длительность почти та же
+                if (stage === 2)
+                    list = root.length > 0 ? list.filter(d => Math.abs(d.duration - root.length) < 4).sort((x, y) => Math.abs(x.duration - root.length) - Math.abs(y.duration - root.length)) : [];
+                synced = (list.find(d => d.syncedLyrics) ?? {}).syncedLyrics ?? "";
+                // Обычный текст — только если длительность совпадает, чтобы не показать чужую песню
+                if (!plain)
+                    plain = (list.find(d => d.plainLyrics && (root.length <= 0 || Math.abs(d.duration - root.length) < 6)) ?? {}).plainLyrics ?? "";
             } catch (e) {}
             if (!synced && stage < 2) {
-                root.request(stage + 1);
+                root.request(stage + 1, plain);
                 return;
             }
             const parsed = synced ? root.parseLrc(synced) : [];
-            root.cache[key] = parsed;
-            root.lyrics = parsed;
-            root.lyricsState = parsed.length ? "ok" : "missing";
-            root.updateLine();
+            root.cache[key] = { lines: parsed, plain: plain };
+            root.setLyrics(parsed, plain);
         };
         xhr.open("GET", url);
         xhr.setRequestHeader("User-Agent", "sosna-shell/1.0 (local desktop)");

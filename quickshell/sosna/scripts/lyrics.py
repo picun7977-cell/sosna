@@ -20,6 +20,7 @@ import socket
 import subprocess
 import sys
 import time
+import unicodedata
 import urllib.parse
 
 API = "https://lrclib.net/api"
@@ -58,6 +59,16 @@ class Client:
         self.good = None  # маршрут, который уже сработал
 
     def get(self, path, **params):
+        # lrclib часто отвечает 503 «server is busy» на секунду-другую — пробуем ещё пару раз
+        for attempt in range(3):
+            try:
+                return self.once(path, params)
+            except Unreachable:
+                if attempt < 2:
+                    time.sleep(1.5)
+        raise Unreachable
+
+    def once(self, path, params):
         url = f"{API}/{path}?{urllib.parse.urlencode(params)}"
         routes = [self.good] if self.good is not None else self.routes
         for route in routes:
@@ -128,7 +139,9 @@ def lookup(artist, title, duration, custom):
 
 
 def main():
-    artist, title = sys.argv[1], sys.argv[2]
+    # «й» и «ё» от плеера бывают из двух символов (буква + знак) — приводим к обычному виду,
+    # иначе lrclib не находит песню
+    artist, title = (unicodedata.normalize("NFC", v).strip() for v in sys.argv[1:3])
     duration = float(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] else 0
     custom = sys.argv[4] if len(sys.argv) > 4 else ""
 

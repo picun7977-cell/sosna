@@ -196,7 +196,8 @@ Singleton {
                     res = { status: "error" };
                 }
                 if (res.status === "error") {
-                    if (root.retries++ < 6)
+                    // Пробуем каждые 20 с, пока играет этот трек (до ~10 минут)
+                    if (root.retries++ < 30)
                         retryTimer.restart();
                     else
                         root.setLyrics([], "");
